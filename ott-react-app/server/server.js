@@ -10,6 +10,7 @@ const https = require("https");
 const { exec } = require("child_process");
 const ffmpegPath = require("ffmpeg-static");
 const multer = require("multer");
+
 const { v4: uuidv4 } = require("uuid");
 
 const {
@@ -25,39 +26,23 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
 
-/* ---------------- CONFIG ---------------- */
-
-const PORT = Number(process.env.PORT) || 5000;
-const HOST = "0.0.0.0";
-
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "http://187.127.154.131",
-  "https://187.127.154.131",
-  process.env.FRONTEND_URL,
-].filter(Boolean);
-
 /* ---------------- MIDDLEWARE ---------------- */
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
+    origin: [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://187.127.154.131",
+      "https://187.127.154.131",
+    ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
   })
 );
 
 app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 /* ---------------- DB ---------------- */
 
@@ -65,7 +50,7 @@ const db = mysql.createPool({
   host: process.env.DB_HOST || "127.0.0.1",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "hflix_db",
+  database: process.env.DB_NAME || "ott_db",
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -85,21 +70,16 @@ db.getConnection((err, connection) => {
 const BUCKET = process.env.AWS_BUCKET_NAME;
 const REGION = process.env.AWS_REGION;
 
-const s3 =
-  BUCKET && REGION && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
-    ? new S3Client({
-        region: REGION,
-        credentials: {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        },
-      })
-    : null;
+const s3 = new S3Client({
+  region: REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
-const buildS3Url = (key) => {
-  if (!BUCKET || !REGION || !key) return "";
-  return `https://s3.${REGION}.amazonaws.com/${BUCKET}/${key}`;
-};
+const buildS3Url = (key) =>
+  `https://s3.${REGION}.amazonaws.com/${BUCKET}/${key}`;
 
 /* ---------------- HELPERS ---------------- */
 
@@ -155,10 +135,6 @@ function convertToHLS(input, outputDir) {
 }
 
 async function uploadFolderToS3(folder, s3Folder) {
-  if (!s3) {
-    throw new Error("S3 is not configured");
-  }
-
   const files = fs.readdirSync(folder);
 
   for (const file of files) {
@@ -168,7 +144,9 @@ async function uploadFolderToS3(folder, s3Folder) {
     let contentType = "application/octet-stream";
     if (file.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
     if (file.endsWith(".ts")) contentType = "video/MP2T";
-    if (file.endsWith(".jpg") || file.endsWith(".jpeg")) contentType = "image/jpeg";
+    if (file.endsWith(".jpg") || file.endsWith(".jpeg")) {
+      contentType = "image/jpeg";
+    }
     if (file.endsWith(".png")) contentType = "image/png";
 
     const command = new PutObjectCommand({
@@ -247,7 +225,7 @@ app.post("/api/signup", async (req, res) => {
       const hashed = await bcrypt.hash(password, 10);
 
       db.query(
-        "INSERT INTO users (name,email,password,created_at) VALUES (?,?,?,NOW())",
+        "INSERT INTO users (name,email,password) VALUES (?,?,?)",
         [name, email, hashed],
         (insertErr) => {
           if (insertErr) {
@@ -268,7 +246,7 @@ app.post("/api/signup", async (req, res) => {
 app.post("/api/login", (req, res) => {
   const { email, password } = req.body;
 
-  db.query("SELECT * FROM users WHERE email=?", [email], async (err, result) => {
+  db.query("SELECT * FROM users WHERE email = ?", [email], async (err, result) => {
     if (err) {
       console.error("Login query error:", err);
       return res.status(500).json({ message: "Database error" });
@@ -396,7 +374,8 @@ app.get("/api/favorites/:userId", (req, res) => {
     const favorites = result.map((movie) => ({
       ...movie,
       thumbnail_url:
-        movie.thumbnail_url || (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
+        movie.thumbnail_url ||
+        (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
     }));
 
     return res.json({
@@ -434,10 +413,6 @@ app.delete("/api/favorites/:userId/:movieId", (req, res) => {
 
 app.post("/api/upload/thumbnail-url", async (req, res) => {
   try {
-    if (!s3) {
-      return res.status(500).json({ message: "S3 is not configured" });
-    }
-
     const { fileName, contentType } = req.body;
 
     if (!fileName || !contentType) {
@@ -472,10 +447,6 @@ app.post("/api/upload/thumbnail-url", async (req, res) => {
 
 app.post("/api/upload/video/init", async (req, res) => {
   try {
-    if (!s3) {
-      return res.status(500).json({ message: "S3 is not configured" });
-    }
-
     const { fileName, contentType } = req.body;
 
     if (!fileName || !contentType) {
@@ -507,10 +478,6 @@ app.post("/api/upload/video/init", async (req, res) => {
 
 app.post("/api/upload/video/part-url", async (req, res) => {
   try {
-    if (!s3) {
-      return res.status(500).json({ message: "S3 is not configured" });
-    }
-
     const { key, uploadId, partNumber } = req.body;
 
     if (!key || !uploadId || !partNumber) {
@@ -542,10 +509,6 @@ app.post("/api/upload/video/part-url", async (req, res) => {
 
 app.post("/api/upload/video/complete", async (req, res) => {
   try {
-    if (!s3) {
-      return res.status(500).json({ message: "S3 is not configured" });
-    }
-
     const { key, uploadId, parts } = req.body;
 
     if (!key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
@@ -583,10 +546,6 @@ app.post("/api/upload/video/complete", async (req, res) => {
 
 app.post("/api/upload/video/abort", async (req, res) => {
   try {
-    if (!s3) {
-      return res.status(500).json({ message: "S3 is not configured" });
-    }
-
     const { key, uploadId } = req.body;
 
     if (!key || !uploadId) {
@@ -826,7 +785,8 @@ app.get("/api/movies", (req, res) => {
     const movies = result.map((movie) => ({
       ...movie,
       thumbnail_url:
-        movie.thumbnail_url || (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
+        movie.thumbnail_url ||
+        (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
     }));
 
     res.json({
@@ -856,7 +816,8 @@ app.get("/api/movies/:id", (req, res) => {
       movie: {
         ...movie,
         thumbnail_url:
-          movie.thumbnail_url || (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
+          movie.thumbnail_url ||
+          (movie.thumbnail_key ? buildS3Url(movie.thumbnail_key) : ""),
       },
     });
   });
@@ -870,10 +831,6 @@ app.post("/api/transcode", async (req, res) => {
 
     if (!videoUrl) {
       return res.status(400).json({ error: "videoUrl is required" });
-    }
-
-    if (!s3) {
-      return res.status(500).json({ error: "S3 is not configured" });
     }
 
     ensureDir(path.join(__dirname, "temp"));
@@ -1263,18 +1220,8 @@ app.get("/api/admin/customer-care/chat/sessions", (req, res) => {
   });
 });
 
-/* ---------------- ERROR HANDLERS ---------------- */
-
-app.use((err, req, res, next) => {
-  console.error("Server error:", err.message);
-  res.status(500).json({
-    success: false,
-    message: err.message || "Internal server error",
-  });
-});
-
 /* ---------------- SERVER ---------------- */
 
-app.listen(PORT, HOST, () => {
-  console.log(`Server running on http://${HOST}:${PORT}`);
+app.listen(process.env.PORT || 5000, "0.0.0.0", () => {
+  console.log(`Server running on http://localhost:${process.env.PORT || 5000}`);
 });
