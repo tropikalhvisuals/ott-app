@@ -17,6 +17,9 @@ function Login() {
   const [errors, setErrors] = useState({});
   const [submitError, setSubmitError] = useState("");
 
+  const API_BASE =
+    import.meta.env.VITE_API_BASE || "http://187.127.154.131:5000";
+
   const validateEmail = (email) => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   };
@@ -67,7 +70,7 @@ function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch("http://localhost:5000/api/login", {
+      const response = await fetch(`${API_BASE}/api/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -78,8 +81,20 @@ function Login() {
         }),
       });
 
-      const data = await response.json();
-      console.log("Login response:", data);
+      const rawText = await response.text();
+      console.log("Raw login response:", rawText);
+
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (parseError) {
+        console.error("Login JSON parse error:", parseError);
+        setSubmitError("Backend returned invalid response");
+        return;
+      }
+
+      console.log("Login response status:", response.status);
+      console.log("Login response data:", data);
 
       if (!response.ok) {
         setSubmitError(data.message || "Invalid email or password");
@@ -91,14 +106,17 @@ function Login() {
         return;
       }
 
-      // Save full user object for profile page
       localStorage.setItem("isLoggedIn", "true");
       localStorage.setItem("user", JSON.stringify(data.user));
-
-      // Optional old keys, keep if other pages use them
       localStorage.setItem("userName", data.user.name || "");
       localStorage.setItem("userEmail", data.user.email || "");
       localStorage.setItem("userId", String(data.user.id || ""));
+
+      if (formData.remember) {
+        localStorage.setItem("rememberedEmail", formData.email.trim());
+      } else {
+        localStorage.removeItem("rememberedEmail");
+      }
 
       navigate("/home");
     } catch (error) {
