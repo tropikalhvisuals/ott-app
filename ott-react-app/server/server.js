@@ -26,16 +26,27 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
 
+/* ---------------- CONFIG ---------------- */
+
+const PORT = Number(process.env.PORT) || 5000;
+const HOST = "0.0.0.0";
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://187.127.154.131",
+  "https://187.127.154.131",
+].filter(Boolean);
+
 /* ---------------- MIDDLEWARE ---------------- */
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-      "http://187.127.154.131",
-      "https://187.127.154.131",
-    ],
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
   })
@@ -70,13 +81,19 @@ db.getConnection((err, connection) => {
 const BUCKET = process.env.AWS_BUCKET_NAME;
 const REGION = process.env.AWS_REGION;
 
-const s3 = new S3Client({
-  region: REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+const s3 =
+  BUCKET &&
+  REGION &&
+  process.env.AWS_ACCESS_KEY_ID &&
+  process.env.AWS_SECRET_ACCESS_KEY
+    ? new S3Client({
+        region: REGION,
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      })
+    : null;
 
 const buildS3Url = (key) =>
   `https://s3.${REGION}.amazonaws.com/${BUCKET}/${key}`;
@@ -135,6 +152,10 @@ function convertToHLS(input, outputDir) {
 }
 
 async function uploadFolderToS3(folder, s3Folder) {
+  if (!s3) {
+    throw new Error("S3 is not configured");
+  }
+
   const files = fs.readdirSync(folder);
 
   for (const file of files) {
@@ -246,6 +267,10 @@ app.post("/api/signup", async (req, res) => {
 app.post("/api/login", (req, res) => {
   const { email, password } = req.body;
 
+  if (!email || !password) {
+    return res.status(400).json({ message: "All fields required" });
+  }
+
   db.query("SELECT * FROM users WHERE email = ?", [email], async (err, result) => {
     if (err) {
       console.error("Login query error:", err);
@@ -253,14 +278,14 @@ app.post("/api/login", (req, res) => {
     }
 
     if (result.length === 0) {
-      return res.status(401).json({ message: "Invalid" });
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
     const user = result[0];
     const match = await bcrypt.compare(password, user.password);
 
     if (!match) {
-      return res.status(401).json({ message: "Invalid" });
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
     res.json({
@@ -413,6 +438,10 @@ app.delete("/api/favorites/:userId/:movieId", (req, res) => {
 
 app.post("/api/upload/thumbnail-url", async (req, res) => {
   try {
+    if (!s3) {
+      return res.status(500).json({ message: "S3 is not configured" });
+    }
+
     const { fileName, contentType } = req.body;
 
     if (!fileName || !contentType) {
@@ -447,6 +476,10 @@ app.post("/api/upload/thumbnail-url", async (req, res) => {
 
 app.post("/api/upload/video/init", async (req, res) => {
   try {
+    if (!s3) {
+      return res.status(500).json({ message: "S3 is not configured" });
+    }
+
     const { fileName, contentType } = req.body;
 
     if (!fileName || !contentType) {
@@ -478,6 +511,10 @@ app.post("/api/upload/video/init", async (req, res) => {
 
 app.post("/api/upload/video/part-url", async (req, res) => {
   try {
+    if (!s3) {
+      return res.status(500).json({ message: "S3 is not configured" });
+    }
+
     const { key, uploadId, partNumber } = req.body;
 
     if (!key || !uploadId || !partNumber) {
@@ -509,6 +546,10 @@ app.post("/api/upload/video/part-url", async (req, res) => {
 
 app.post("/api/upload/video/complete", async (req, res) => {
   try {
+    if (!s3) {
+      return res.status(500).json({ message: "S3 is not configured" });
+    }
+
     const { key, uploadId, parts } = req.body;
 
     if (!key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
@@ -546,6 +587,10 @@ app.post("/api/upload/video/complete", async (req, res) => {
 
 app.post("/api/upload/video/abort", async (req, res) => {
   try {
+    if (!s3) {
+      return res.status(500).json({ message: "S3 is not configured" });
+    }
+
     const { key, uploadId } = req.body;
 
     if (!key || !uploadId) {
@@ -1220,8 +1265,18 @@ app.get("/api/admin/customer-care/chat/sessions", (req, res) => {
   });
 });
 
+/* ---------------- ERROR HANDLER ---------------- */
+
+app.use((err, req, res, next) => {
+  console.error("Unhandled server error:", err);
+  res.status(500).json({
+    success: false,
+    message: err.message || "Internal server error",
+  });
+});
+
 /* ---------------- SERVER ---------------- */
 
-app.listen(process.env.PORT || 5000, "0.0.0.0", () => {
-  console.log(`Server running on http://localhost:${process.env.PORT || 5000}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
